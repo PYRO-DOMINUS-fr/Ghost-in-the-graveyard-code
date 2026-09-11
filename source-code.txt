@@ -1,0 +1,1049 @@
+/* =========================================================
+   GHOST IN THE GRAVEYARD
+   ========================================================= */
+
+
+/* =========================
+   SETTINGS
+========================= */
+
+const MIN_PLAYERS = 2
+
+const HIDE_TIME = 20
+const HUNT_TIME = 300
+
+/* Safe zone center */
+const SAFE_X = 0
+const SAFE_Y = 0
+const SAFE_Z = 0
+
+/* 10x10 safe zone */
+const SAFE_RADIUS = 5
+
+/* Ghost transparency */
+const GHOST_OPACITY = 0.5
+
+/* Coins */
+const ESCAPE_REWARD = 10
+const GHOST_SURVIVE_REWARD = 20
+
+/* Hunter item */
+const GHOST_STICK = "Flashlight"
+
+
+/* =========================
+   GAME STATE
+========================= */
+
+let gameState = "WAITING"
+
+let ghostId = null
+
+let hideEndTime = 0
+let huntEndTime = 0
+
+let foundGhost = false
+
+/* Prevents duplicate ghost rewards */
+let ghostRewardGiven = false
+
+/* Prevents duplicate winner announcements */
+let winnerAnnounced = false
+
+let escapedPlayers = {}
+
+let roundPlayers = []
+
+let lastHideSecond = null
+
+/* Next round */
+let nextGhostId = null
+let nextRoundTime = 0
+
+
+/* =========================
+   PLAYER FUNCTIONS
+========================= */
+
+function getPlayers() {
+    return api.getPlayerIds()
+}
+
+
+function playerExists(playerId) {
+
+    if (playerId == null) {
+        return false
+    }
+
+    return getPlayers().includes(playerId)
+}
+
+
+/* =========================
+   MESSAGES
+========================= */
+
+function announce(message, color) {
+
+    api.broadcastMessage(
+        message,
+        {
+            color: color || "white"
+        }
+    )
+}
+
+
+function tell(playerId, message, color) {
+
+    if (!playerExists(playerId)) {
+        return
+    }
+
+    api.sendMessage(
+        playerId,
+        message,
+        {
+            color: color || "white"
+        }
+    )
+}
+
+
+/* =========================
+   COINS
+========================= */
+
+function giveCoins(playerId, amount) {
+
+    if (!playerExists(playerId)) {
+        return
+    }
+
+    api.giveItem(
+        playerId,
+        "Gold Coin",
+        amount
+    )
+}
+
+
+/* =========================
+   GIVE HUNTER FLASHLIGHTS
+========================= */
+
+function giveHunterSticks() {
+
+    for (const playerId of getPlayers()) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        api.giveItem(
+            playerId,
+            GHOST_STICK,
+            1
+        )
+
+        tell(
+            playerId,
+            "You received a Flashlight!",
+            "aqua"
+        )
+
+        tell(
+            playerId,
+            "Use the Flashlight to find the ghost!",
+            "yellow"
+        )
+    }
+}
+
+
+/* =========================
+   REMOVE FLASHLIGHTS
+========================= */
+
+function removeHunterSticks() {
+
+    for (const playerId of getPlayers()) {
+
+        api.removeItemName(
+            playerId,
+            GHOST_STICK,
+            999
+        )
+    }
+}
+
+
+/* =========================
+   GHOST TRANSPARENCY
+========================= */
+
+function setGhostOpacity(opacity) {
+
+    if (!playerExists(ghostId)) {
+        return
+    }
+
+    api.setTargetedPlayerSettingForEveryone(
+        ghostId,
+        "opacity",
+        opacity,
+        true
+    )
+
+    if (opacity === GHOST_OPACITY) {
+
+        api.setTargetedPlayerSettingForEveryone(
+            ghostId,
+            "nameTagInfo",
+            {
+                backgroundColor: "#0000000",
+                content: []
+            },
+            true
+        )
+    }
+}
+
+
+function makeGhostVisible() {
+
+    if (!playerExists(ghostId)) {
+        return
+    }
+
+    api.setTargetedPlayerSettingForEveryone(
+        ghostId,
+        "opacity",
+        1,
+        true
+    )
+
+    api.setTargetedPlayerSettingForEveryone(
+        ghostId,
+        "nameTagInfo",
+        {
+            backgroundColor: "#0000000",
+            content: [
+                api.getPlayerName(ghostId)
+            ]
+        },
+        true
+    )
+}
+
+
+/* =========================
+   FREEZE HUNTERS
+========================= */
+
+function freezeHunters() {
+
+    for (const playerId of getPlayers()) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        api.applyEffect(
+            playerId,
+            "Frozen",
+            1000,
+            {
+                inbuiltLevel: 1
+            }
+        )
+    }
+}
+
+
+/* =========================
+   RANDOM PLAYER
+========================= */
+
+function chooseRandomPlayer(excludeId) {
+
+    const players =
+        getPlayers().filter(
+            id => id !== excludeId
+        )
+
+    if (players.length === 0) {
+        return null
+    }
+
+    const index =
+        Math.floor(
+            Math.random() * players.length
+        )
+
+    return players[index]
+}
+
+
+/* =========================
+   START ROUND
+========================= */
+
+function startRound(firstGhost) {
+
+    const players = getPlayers()
+
+    if (players.length < MIN_PLAYERS) {
+
+        gameState = "WAITING"
+
+        return
+    }
+
+    roundPlayers = [...players]
+
+    ghostId =
+        firstGhost ||
+        chooseRandomPlayer(null)
+
+    if (!ghostId) {
+
+        gameState = "WAITING"
+
+        return
+    }
+
+
+    /* =========================
+       TELEPORT HUNTERS
+    ========================= */
+
+    for (const playerId of players) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        api.setPosition(
+            playerId,
+            150.5,
+            1,
+            35.5
+        )
+    }
+
+
+    escapedPlayers = {}
+
+    foundGhost = false
+
+    ghostRewardGiven = false
+
+    winnerAnnounced = false
+
+    lastHideSecond = null
+
+
+    /* Remove old flashlights */
+
+    removeHunterSticks()
+
+
+    /* Give hunters flashlights */
+
+    giveHunterSticks()
+
+
+    /* Ghost is semi-transparent */
+
+    setGhostOpacity(
+        GHOST_OPACITY
+    )
+
+
+    /* Start hiding */
+
+    gameState = "HIDING"
+
+    const now = Date.now()
+
+    hideEndTime =
+        now +
+        HIDE_TIME * 1000
+
+    huntEndTime =
+        hideEndTime +
+        HUNT_TIME * 1000
+
+
+    /* =========================
+       ANNOUNCEMENT
+    ========================= */
+
+    announce(
+        "GHOST IN THE GRAVEYARD!",
+        "purple"
+    )
+
+    announce(
+        "The ghost has 20 seconds to hide!",
+        "yellow"
+    )
+
+
+    /* =========================
+       GHOST
+    ========================= */
+
+    tell(
+        ghostId,
+        "YOU ARE THE GHOST!",
+        "purple"
+    )
+
+    tell(
+        ghostId,
+        "You have 20 seconds to hide.",
+        "yellow"
+    )
+
+    tell(
+        ghostId,
+        "You are semi-transparent.",
+        "gray"
+    )
+
+    tell(
+        ghostId,
+        "Survive 5 minutes without being found for 20 coins!",
+        "green"
+    )
+
+
+    /* =========================
+       HUNTERS
+    ========================= */
+
+    for (const playerId of players) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        tell(
+            playerId,
+            "YOU ARE A HUNTER!",
+            "aqua"
+        )
+
+        tell(
+            playerId,
+            "You have a Flashlight to find the ghost.",
+            "yellow"
+        )
+
+        tell(
+            playerId,
+            "The hunt begins in 20 seconds.",
+            "gray"
+        )
+    }
+}
+
+
+/* =========================
+   START HUNT
+========================= */
+
+function startHunt() {
+
+    if (gameState !== "HIDING") {
+        return
+    }
+
+    gameState = "HUNTING"
+
+    announce(
+        "THE HUNT BEGINS!",
+        "aqua"
+    )
+
+    announce(
+        "Find the ghost!",
+        "yellow"
+    )
+
+    announce(
+        "You have 5 minutes!",
+        "yellow"
+    )
+
+
+    for (const playerId of getPlayers()) {
+
+        if (playerId === ghostId) {
+
+            tell(
+                playerId,
+                "HUNTING HAS BEGUN!",
+                "purple"
+            )
+
+            tell(
+                playerId,
+                "STAY HIDDEN!",
+                "yellow"
+            )
+
+        } else {
+
+            tell(
+                playerId,
+                "FIND THE GHOST!",
+                "aqua"
+            )
+
+            tell(
+                playerId,
+                "Find the ghost before 5 minutes are up!",
+                "yellow"
+            )
+        }
+    }
+}
+
+
+/* =========================
+   GHOST FOUND
+========================= */
+
+function ghostFound(foundBy) {
+
+    if (gameState !== "HUNTING") {
+        return
+    }
+
+    if (!playerExists(foundBy)) {
+        return
+    }
+
+    if (foundBy === ghostId) {
+        return
+    }
+
+    if (foundGhost) {
+        return
+    }
+
+    foundGhost = true
+
+    gameState = "SAFE_RUN"
+
+
+    /* Ghost becomes visible */
+
+    makeGhostVisible()
+
+
+    /* =========================
+       ANNOUNCEMENT
+    ========================= */
+
+    announce(
+        "GHOST IN THE GRAVEYARD!",
+        "red"
+    )
+
+    announce(
+        "RUN TO THE SAFE ZONE!",
+        "yellow"
+    )
+
+    announce(
+        "The ghost is coming for you!",
+        "purple"
+    )
+
+
+    /* =========================
+       GHOST
+    ========================= */
+
+    if (playerExists(ghostId)) {
+
+        tell(
+            ghostId,
+            "YOU HAVE BEEN FOUND!",
+            "red"
+        )
+
+        tell(
+            ghostId,
+            "TAG SOMEONE BEFORE THEY ESCAPE!",
+            "purple"
+        )
+    }
+
+
+    /* =========================
+       HUNTERS
+    ========================= */
+
+    for (const playerId of getPlayers()) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        tell(
+            playerId,
+            "RUN TO THE SAFE ZONE!",
+            "yellow"
+        )
+
+        tell(
+            playerId,
+            "GET THERE BEFORE THE GHOST TAGS YOU!",
+            "red"
+        )
+    }
+}
+
+
+/* =========================
+   PLAYER ESCAPES
+========================= */
+
+function escapePlayer(playerId) {
+
+    if (escapedPlayers[playerId]) {
+        return
+    }
+
+    escapedPlayers[playerId] = true
+
+
+    /* Give exactly 10 coins */
+
+    giveCoins(
+        playerId,
+        ESCAPE_REWARD
+    )
+
+
+    announce(
+        api.getPlayerName(playerId) +
+        " escaped! +10 coins!",
+        "green"
+    )
+
+    tell(
+        playerId,
+        "YOU ESCAPED!",
+        "green"
+    )
+
+    tell(
+        playerId,
+        "+10 coins",
+        "yellow"
+    )
+}
+
+
+/* =========================
+   GHOST TAGS PLAYER
+========================= */
+
+function ghostTagsPlayer(playerId) {
+
+    if (gameState !== "SAFE_RUN") {
+        return
+    }
+
+    if (!playerExists(playerId)) {
+        return
+    }
+
+    if (playerId === ghostId) {
+        return
+    }
+
+    if (escapedPlayers[playerId]) {
+        return
+    }
+
+
+    announce(
+        api.getPlayerName(ghostId) +
+        " tagged " +
+        api.getPlayerName(playerId) +
+        "!",
+        "purple"
+    )
+
+    tell(
+        playerId,
+        "YOU ARE THE NEXT GHOST!",
+        "purple"
+    )
+
+    endRoundWithNextGhost(
+        playerId
+    )
+}
+
+
+/* =========================
+   END ROUND WITH TAGGED PLAYER
+========================= */
+
+function endRoundWithNextGhost(nextGhost) {
+
+    makeGhostVisible()
+
+    removeHunterSticks()
+
+    gameState = "ROUND_ENDING"
+
+    nextGhostId = nextGhost
+
+    nextRoundTime =
+        Date.now() + 3000
+
+
+    announce(
+        "ROUND OVER!",
+        "yellow"
+    )
+
+    announce(
+        "Next ghost: " +
+        api.getPlayerName(nextGhost),
+        "purple"
+    )
+}
+
+
+/* =========================
+   GHOST SURVIVES
+========================= */
+
+function ghostSurvived() {
+
+    if (gameState !== "HUNTING") {
+        return
+    }
+
+    /* Prevent duplicate rewards */
+
+    if (ghostRewardGiven) {
+        return
+    }
+
+    ghostRewardGiven = true
+
+
+    if (!playerExists(ghostId)) {
+
+        endRoundRandomGhost()
+
+        return
+    }
+
+
+    /* =========================
+       GIVE EXACTLY 20 COINS
+    ========================= */
+
+    giveCoins(
+        ghostId,
+        GHOST_SURVIVE_REWARD
+    )
+
+    makeGhostVisible()
+
+
+    if (!winnerAnnounced) {
+
+        winnerAnnounced = true
+
+        announce(
+            "THE GHOST SURVIVED!",
+            "purple"
+        )
+
+        announce(
+            api.getPlayerName(ghostId) +
+            " survived the entire 5 minutes!",
+            "yellow"
+        )
+
+        announce(
+            "+20 COINS!",
+            "green"
+        )
+
+        tell(
+            ghostId,
+            "YOU WIN!",
+            "purple"
+        )
+
+        tell(
+            ghostId,
+            "You survived the entire 5 minutes!",
+            "yellow"
+        )
+
+        tell(
+            ghostId,
+            "+20 coins",
+            "green"
+        )
+    }
+
+
+    endRoundRandomGhost()
+}
+
+
+/* =========================
+   RANDOM NEXT GHOST
+========================= */
+
+function endRoundRandomGhost() {
+
+    makeGhostVisible()
+
+    removeHunterSticks()
+
+    const oldGhost =
+        ghostId
+
+    gameState = "ROUND_ENDING"
+
+    nextGhostId =
+        chooseRandomPlayer(oldGhost)
+
+    nextRoundTime =
+        Date.now() + 3000
+
+
+    if (getPlayers().length < MIN_PLAYERS) {
+
+        gameState = "WAITING"
+
+        ghostId = null
+
+        nextGhostId = null
+
+        return
+    }
+
+
+    if (!nextGhostId) {
+
+        gameState = "WAITING"
+
+        ghostId = null
+
+        return
+    }
+
+
+    announce(
+        "Next round starting soon...",
+        "yellow"
+    )
+}
+
+
+/* =========================
+   SAFE ZONE CHECK
+========================= */
+
+function checkSafeZone() {
+
+    if (gameState !== "SAFE_RUN") {
+        return
+    }
+
+
+    for (const playerId of getPlayers()) {
+
+        if (playerId === ghostId) {
+            continue
+        }
+
+        if (escapedPlayers[playerId]) {
+            continue
+        }
+
+
+        const pos =
+            api.getPosition(playerId)
+
+        if (!pos) {
+            continue
+        }
+
+
+        /* 10x10 SQUARE */
+
+        const insideX =
+            Math.abs(
+                pos[0] - SAFE_X
+            ) <= SAFE_RADIUS
+
+        const insideZ =
+            Math.abs(
+                pos[2] - SAFE_Z
+            ) <= SAFE_RADIUS
+
+
+        if (
+            insideX &&
+            insideZ
+        ) {
+
+            escapePlayer(
+                playerId
+            )
+        }
+    }
+}
+
+
+/* =========================
+   PLAYER JOIN
+========================= */
+
+onPlayerJoin =
+(
+    playerId,
+    fromGameReset
+) => {
+
+    /* Lighting */
+
+    api.setClientOption(
+        playerId,
+        "lightingOverride",
+        true
+    )
+
+
+    tell(
+        playerId,
+        "GHOST IN THE GRAVEYARD",
+        "purple"
+    )
+
+
+    if (
+        getPlayers().length <
+        MIN_PLAYERS
+    ) {
+
+        const needed =
+            MIN_PLAYERS -
+            getPlayers().length
+
+        tell(
+            playerId,
+            "Waiting for " +
+            needed +
+            " more player(s)...",
+            "yellow"
+        )
+
+        gameState = "WAITING"
+
+        return
+    }
+
+
+    if (
+        gameState ===
+        "WAITING"
+    ) {
+
+        startRound(
+            null
+        )
+    }
+}
+
+
+/* =========================
+   PLAYER LEAVE
+========================= */
+
+onPlayerLeave =
+(
+    playerId,
+    serverIsShuttingDown
+) => {
+
+    if (
+        playerId === ghostId
+    ) {
+
+        if (
+            getPlayers().length >=
+            MIN_PLAYERS
+        ) {
+
+            announce(
+                "The ghost left the graveyard!",
+                "red"
+            )
+
+            endRoundRandomGhost()
+
+        } else {
+
+            ghostId = null
+
+            gameState = "WAITING"
+
+            nextGhostId = null
+        }
+    }
+}
+
+
+/* =========================
+   INITIALIZE
+========================= */
+
+gameState = "WAITING"
+
+ghostId = null
+
+ghostRewardGiven = false
+
+winnerAnnounced = false
+
+nextGhostId = null
+
+nextRoundTime = 0
+
+
+announce(
+    "Ghost in the Graveyard is ready!",
+    "purple"
+)
+
+
+if (
+    getPlayers().length >=
+    MIN_PLAYERS
+) {
+
+    startRound(
+        null
+    )
+}
