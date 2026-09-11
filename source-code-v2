@@ -1,0 +1,376 @@
+/* ================= GHOST IN THE GRAVEYARD ================= */
+
+const MIN_PLAYERS = 2
+const HIDE_TIME = 20
+const HUNT_TIME = 300
+const SAFE_RUN_TIME = 15   // seconds ghost has to tag someone once found
+
+const SAFE_X = 0
+const SAFE_Z = 0
+const SAFE_RADIUS = 5      // 10x10 safe zone
+
+const GHOST_OPACITY = 0.5
+const ESCAPE_REWARD = 10
+const GHOST_SURVIVE_REWARD = 20
+const GHOST_STICK = "Flashlight"
+
+/* ---------- state ---------- */
+let gameState = "WAITING"
+let ghostId = null
+let hideEndTime = 0, huntEndTime = 0, safeRunEndTime = 0
+let foundGhost = false
+let ghostRewardGiven = false
+let winnerAnnounced = false
+let escapedPlayers = {}
+let roundPlayers = []           // players present when the round started
+let lastHideSecond = null
+let lastHuntReminder = null
+let nextGhostId = null
+let nextRoundTime = 0
+
+/* ---------- helpers ---------- */
+function getPlayers() { return api.getPlayerIds() }
+
+function playerExists(id) { return id != null && getPlayers().includes(id) }
+
+function announce(msg, color) { api.broadcastMessage(msg, { color: color || "white" }) }
+
+function tell(id, msg, color) {
+    if (!playerExists(id)) return
+    api.sendMessage(id, msg, { color: color || "white" })
+}
+
+function giveCoins(id, amount) {
+    if (!playerExists(id)) return
+    api.giveItem(id, "Gold Coin", amount)
+}
+
+function giveHunterSticks() {
+    for (const id of getPlayers()) {
+        if (id === ghostId) continue
+        api.giveItem(id, GHOST_STICK, 1)
+        tell(id, "You received a Flashlight!", "aqua")
+        tell(id, "Use the Flashlight to find the ghost!", "yellow")
+    }
+}
+
+function removeHunterSticks() {
+    for (const id of getPlayers()) api.removeItemName(id, GHOST_STICK, 999)
+}
+
+function setGhostOpacity(opacity) {
+    if (!playerExists(ghostId)) return
+    api.setTargetedPlayerSettingForEveryone(ghostId, "opacity", opacity, true)
+    if (opacity === GHOST_OPACITY) {
+        api.setTargetedPlayerSettingForEveryone(
+            ghostId, "nameTagInfo",
+            { backgroundColor: "#000000", content: [] },
+            true
+        )
+    }
+}
+
+function makeGhostVisible() {
+    if (!playerExists(ghostId)) return
+    api.setTargetedPlayerSettingForEveryone(ghostId, "opacity", 1, true)
+    api.setTargetedPlayerSettingForEveryone(
+        ghostId, "nameTagInfo",
+        { backgroundColor: "#000000", content: [api.getPlayerName(ghostId)] },
+        true
+    )
+}
+
+function freezeHunters(durationMs) {
+    for (const id of getPlayers()) {
+        if (id === ghostId) continue
+        api.applyEffect(id, "Frozen", durationMs, { inbuiltLevel: 1 })
+    }
+}
+
+function chooseRandomPlayer(excludeId) {
+    const players = getPlayers().filter(id => id !== excludeId)
+    if (players.length === 0) return null
+    return players[Math.floor(Math.random() * players.length)]
+}
+
+/* ---------- round flow ---------- */
+function startRound(firstGhost) {
+    const players = getPlayers()
+    if (players.length < MIN_PLAYERS) { gameState = "WAITING"; return }
+
+    roundPlayers = [...players]
+    ghostId = firstGhost || chooseRandomPlayer(null)
+    if (!ghostId) { gameState = "WAITING"; return }
+
+    for (const id of players) {
+        if (id === ghostId) continue
+        api.setPosition(id, 150.5, 1, 35.5)
+    }
+
+    escapedPlayers = {}
+    foundGhost = false
+    ghostRewardGiven = false
+    winnerAnnounced = false
+    lastHideSecond = null
+    lastHuntReminder = null
+
+    removeHunterSticks()
+    giveHunterSticks()
+    setGhostOpacity(GHOST_OPACITY)
+
+    gameState = "HIDING"
+    const now = Date.now()
+    hideEndTime = now + HIDE_TIME * 1000
+    huntEndTime = hideEndTime + HUNT_TIME * 1000
+
+    freezeHunters(HIDE_TIME * 1000) // hunters can't scout while the ghost hides
+
+    announce("GHOST IN THE GRAVEYARD!", "purple")
+    announce("The ghost has 20 seconds to hide!", "yellow")
+
+    tell(ghostId, "YOU ARE THE GHOST!", "purple")
+    tell(ghostId, "You have 20 seconds to hide.", "yellow")
+    tell(ghostId, "You are semi-transparent.", "gray")
+    tell(ghostId, "Survive 5 minutes without being found for 20 coins!", "green")
+
+    for (const id of players) {
+        if (id === ghostId) continue
+        tell(id, "YOU ARE A HUNTER!", "aqua")
+        tell(id, "You have a Flashlight to find the ghost.", "yellow")
+        tell(id, "The hunt begins in 20 seconds.", "gray")
+    }
+}
+
+function startHunt() {
+    if (gameState !== "HIDING") return
+    gameState = "HUNTING"
+
+    announce("THE HUNT BEGINS!", "aqua")
+    announce("Find the ghost!", "yellow")
+    announce("You have 5 minutes!", "yellow")
+
+    for (const id of getPlayers()) {
+        if (id === ghostId) {
+            tell(id, "HUNTING HAS BEGUN!", "purple")
+            tell(id, "STAY HIDDEN!", "yellow")
+        } else {
+            tell(id, "FIND THE GHOST!", "aqua")
+            tell(id, "Find the ghost before 5 minutes are up!", "yellow")
+        }
+    }
+}
+
+function ghostFound(foundBy) {
+    if (gameState !== "HUNTING") return
+    if (!playerExists(foundBy)) return
+    if (foundBy === ghostId) return
+    if (foundGhost) return
+
+    foundGhost = true
+    gameState = "SAFE_RUN"
+    safeRunEndTime = Date.now() + SAFE_RUN_TIME * 1000
+
+    makeGhostVisible()
+
+    announce("GHOST IN THE GRAVEYARD!", "red")
+    announce("RUN TO THE SAFE ZONE!", "yellow")
+    announce("The ghost is coming for you!", "purple")
+
+    if (playerExists(ghostId)) {
+        tell(ghostId, "YOU HAVE BEEN FOUND!", "red")
+        tell(ghostId, "TAG SOMEONE BEFORE THEY ESCAPE!", "purple")
+    }
+
+    for (const id of getPlayers()) {
+        if (id === ghostId) continue
+        tell(id, "RUN TO THE SAFE ZONE!", "yellow")
+        tell(id, "GET THERE BEFORE THE GHOST TAGS YOU!", "red")
+    }
+}
+
+function escapePlayer(id) {
+    if (escapedPlayers[id]) return
+    escapedPlayers[id] = true
+    giveCoins(id, ESCAPE_REWARD)
+    announce(api.getPlayerName(id) + " escaped! +10 coins!", "green")
+    tell(id, "YOU ESCAPED!", "green")
+    tell(id, "+10 coins", "yellow")
+}
+
+function ghostTagsPlayer(id) {
+    if (gameState !== "SAFE_RUN") return
+    if (!playerExists(id)) return
+    if (id === ghostId) return
+    if (!roundPlayers.includes(id)) return
+    if (escapedPlayers[id]) return
+
+    announce(api.getPlayerName(ghostId) + " tagged " + api.getPlayerName(id) + "!", "purple")
+    tell(id, "YOU ARE THE NEXT GHOST!", "purple")
+    endRoundWithNextGhost(id)
+}
+
+function endRoundWithNextGhost(nextGhost) {
+    makeGhostVisible()
+    removeHunterSticks()
+    gameState = "ROUND_ENDING"
+    nextGhostId = nextGhost
+    nextRoundTime = Date.now() + 3000
+    announce("ROUND OVER!", "yellow")
+    announce("Next ghost: " + api.getPlayerName(nextGhost), "purple")
+}
+
+function ghostSurvived() {
+    if (gameState !== "HUNTING") return
+    if (ghostRewardGiven) return
+    ghostRewardGiven = true
+
+    if (!playerExists(ghostId)) { endRoundRandomGhost(); return }
+
+    giveCoins(ghostId, GHOST_SURVIVE_REWARD)
+    makeGhostVisible()
+
+    if (!winnerAnnounced) {
+        winnerAnnounced = true
+        announce("THE GHOST SURVIVED!", "purple")
+        announce(api.getPlayerName(ghostId) + " survived the entire 5 minutes!", "yellow")
+        announce("+20 COINS!", "green")
+        tell(ghostId, "YOU WIN!", "purple")
+        tell(ghostId, "You survived the entire 5 minutes!", "yellow")
+        tell(ghostId, "+20 coins", "green")
+    }
+
+    endRoundRandomGhost()
+}
+
+function endRoundRandomGhost() {
+    makeGhostVisible()
+    removeHunterSticks()
+    const oldGhost = ghostId
+    gameState = "ROUND_ENDING"
+    nextGhostId = chooseRandomPlayer(oldGhost)
+    nextRoundTime = Date.now() + 3000
+
+    if (getPlayers().length < MIN_PLAYERS) {
+        gameState = "WAITING"; ghostId = null; nextGhostId = null
+        return
+    }
+    if (!nextGhostId) { gameState = "WAITING"; ghostId = null; return }
+
+    announce("Next round starting soon...", "yellow")
+}
+
+function checkSafeZone() {
+    if (gameState !== "SAFE_RUN") return
+
+    for (const id of roundPlayers) {
+        if (id === ghostId) continue
+        if (escapedPlayers[id]) continue
+        if (!playerExists(id)) continue
+
+        const pos = api.getPosition(id)
+        if (!pos) continue
+
+        const insideX = Math.abs(pos[0] - SAFE_X) <= SAFE_RADIUS
+        const insideZ = Math.abs(pos[2] - SAFE_Z) <= SAFE_RADIUS
+        if (insideX && insideZ) escapePlayer(id)
+    }
+}
+
+/* ---------- main loop (bloxd calls this every tick) ---------- */
+tick = (t) => {
+    const now = Date.now()
+
+    if (gameState === "HIDING") {
+        const secondsLeft = Math.ceil((hideEndTime - now) / 1000)
+        if (secondsLeft > 0 && secondsLeft <= 5 && secondsLeft !== lastHideSecond) {
+            lastHideSecond = secondsLeft
+            announce(secondsLeft + "...", "yellow")
+        }
+        if (now >= hideEndTime) startHunt()
+        return
+    }
+
+    if (gameState === "HUNTING") {
+        const secondsLeft = Math.round((huntEndTime - now) / 1000)
+        if ([120, 60, 30, 10].includes(secondsLeft) && secondsLeft !== lastHuntReminder) {
+            lastHuntReminder = secondsLeft
+            announce(secondsLeft + " seconds left to find the ghost!", "yellow")
+        }
+        if (now >= huntEndTime) ghostSurvived()
+        return
+    }
+
+    if (gameState === "SAFE_RUN") {
+        checkSafeZone()
+
+        const stillChaseable = roundPlayers.filter(
+            id => id !== ghostId && playerExists(id) && !escapedPlayers[id]
+        )
+        if (stillChaseable.length === 0) {
+            announce("EVERYONE ESCAPED!", "green")
+            endRoundRandomGhost()
+            return
+        }
+        if (now >= safeRunEndTime) {
+            announce("TIME'S UP! The ghost couldn't catch anyone!", "green")
+            endRoundRandomGhost()
+            return
+        }
+        return
+    }
+
+    if (gameState === "ROUND_ENDING") {
+        if (now >= nextRoundTime) {
+            let ghostForNextRound = nextGhostId
+            if (!playerExists(ghostForNextRound)) ghostForNextRound = chooseRandomPlayer(null)
+
+            if (ghostForNextRound && getPlayers().length >= MIN_PLAYERS) {
+                startRound(ghostForNextRound)
+            } else {
+                gameState = "WAITING"; ghostId = null; nextGhostId = null
+            }
+        }
+    }
+}
+
+/* ---------- join / leave ---------- */
+onPlayerJoin = (playerId, fromGameReset) => {
+    api.setClientOption(playerId, "lightingOverride", true)
+    tell(playerId, "GHOST IN THE GRAVEYARD", "purple")
+
+    if (getPlayers().length < MIN_PLAYERS) {
+        const needed = MIN_PLAYERS - getPlayers().length
+        tell(playerId, "Waiting for " + needed + " more player(s)...", "yellow")
+        gameState = "WAITING"
+        return
+    }
+
+    if (gameState === "WAITING") { startRound(null); return }
+
+    tell(playerId, "A round is already in progress. You'll join the next one!", "yellow")
+}
+
+onPlayerLeave = (playerId, serverIsShuttingDown) => {
+    if (playerId !== ghostId) return
+
+    if (getPlayers().length >= MIN_PLAYERS) {
+        announce("The ghost left the graveyard!", "red")
+        endRoundRandomGhost()
+    } else {
+        ghostId = null
+        gameState = "WAITING"
+        nextGhostId = null
+    }
+}
+
+/* ---------- initialize ---------- */
+gameState = "WAITING"
+ghostId = null
+ghostRewardGiven = false
+winnerAnnounced = false
+nextGhostId = null
+nextRoundTime = 0
+
+announce("Ghost in the Graveyard is ready!", "purple")
+
+if (getPlayers().length >= MIN_PLAYERS) startRound(null)
