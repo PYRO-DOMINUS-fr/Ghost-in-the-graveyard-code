@@ -1014,6 +1014,163 @@ onPlayerLeave =
     }
 }
 
+/* =========================================================
+   PLAYER DAMAGING CALLBACK
+========================================================= */
+
+onPlayerDamagingOtherPlayer = (
+    attackingPlayer,
+    damagedPlayer,
+    damageDealt,
+    withItem,
+    bodyPartHit,
+    damagerDbId
+) => {
+
+    /* =========================
+       HIDING
+    ========================= */
+
+    if (gameState === "HIDING") {
+
+        return
+    }
+
+
+    /* =========================
+       HUNTING
+    ========================= */
+
+    if (gameState === "HUNTING") {
+
+        /* Ghost cannot attack */
+        if (attackingPlayer === ghostId) {
+
+            return
+        }
+
+
+        /* Hunter found ghost */
+        if (damagedPlayer === ghostId) {
+
+            foundGhost = true
+
+            gameState = "SAFE_RUN"
+
+            makeGhostVisible()
+
+
+            announce(
+                "GHOST IN THE GRAVEYARD!",
+                "red"
+            )
+
+            announce(
+                "RUN TO THE SAFE ZONE!",
+                "yellow"
+            )
+
+            announce(
+                "The ghost is coming for you!",
+                "purple"
+            )
+
+
+            tell(
+                ghostId,
+                "YOU HAVE BEEN FOUND!",
+                "red"
+            )
+
+            tell(
+                ghostId,
+                "TAG SOMEONE BEFORE THEY ESCAPE!",
+                "purple"
+            )
+
+
+            for (const id of getPlayers()) {
+
+                if (id === ghostId) continue
+
+
+                tell(
+                    id,
+                    "RUN TO THE SAFE ZONE!",
+                    "yellow"
+                )
+
+                tell(
+                    id,
+                    "GET THERE BEFORE THE GHOST TAGS YOU!",
+                    "red"
+                )
+            }
+
+
+            return
+        }
+
+
+        /* Hunter hit another hunter */
+
+        tell(
+            attackingPlayer,
+            "DON'T HIT YOUR TEAMMATES!",
+            "red"
+        )
+
+
+        return
+    }
+
+
+    /* =========================
+       SAFE RUN
+    ========================= */
+
+    if (gameState === "SAFE_RUN") {
+
+        /* Only ghost can tag */
+        if (attackingPlayer !== ghostId) {
+
+            return
+        }
+
+
+        /* Ghost cannot tag itself */
+        if (damagedPlayer === ghostId) {
+
+            return
+        }
+
+
+        /* Already escaped */
+        if (escapedPlayers[damagedPlayer]) {
+
+            return
+        }
+
+
+        /* Must be part of round */
+        if (!roundPlayers.includes(damagedPlayer)) {
+
+            return
+        }
+
+
+        /* Ghost tagged player */
+
+        ghostTagsPlayer(
+            damagedPlayer
+        )
+
+
+        return
+    }
+}
+
+
 
 /* =========================
    INITIALIZE
